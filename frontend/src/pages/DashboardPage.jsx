@@ -97,19 +97,7 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* Recent Alerts */}
-          <div className="glass-panel" style={{ padding: '16px', flex: 1, overflowY: 'auto' }}>
-            <p className="section-title">🚨 Recent Alerts</p>
-            {alerts.length === 0
-              ? <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No alerts yet.</p>
-              : alerts.map((a, i) => (
-                <div key={i} className="alert-item">
-                  <strong>{a.vehicle_number}</strong> at {a.camera_id}<br />
-                  <span style={{ color: '#ef4444', fontSize: '12px' }}>{a.reason}</span>
-                </div>
-              ))
-            }
-          </div>
+
         </div>
       </div>
 
