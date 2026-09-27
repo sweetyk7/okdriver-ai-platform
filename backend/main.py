@@ -1,12 +1,21 @@
 from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 import asyncio
 import json
+import cv2
+import os
+import threading
+from datetime import datetime
 
 import models
 import schemas
 from database import engine, get_db
+
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
+from webrtc_stream import OpenCVStreamTrack
+import uuid
 
 # Create new tables
 models.Base.metadata.create_all(bind=engine)
@@ -70,6 +79,169 @@ def delete_camera(camera_id: str, db: Session = Depends(get_db)):
     db.delete(db_camera)
     db.commit()
     return {"message": "Camera deleted successfully"}
+
+async def generate_frames(stream_url):
+    # Support RTSP, HTTP, or local USB webcam (like "0")
+    try:
+        url = int(stream_url) if stream_url.isdigit() else stream_url
+    except:
+        url = stream_url
+        
+    cap = cv2.VideoCapture(url)
+    try:
+        while cap.isOpened():
+            success, frame = await asyncio.to_thread(cap.read)
+            if not success:
+                break
+            # Reduce resolution for smoother browser stream if needed
+            frame = cv2.resize(frame, (640, 360))
+            ret, buffer = cv2.imencode('.jpg', frame)
+            frame_bytes = buffer.tobytes()
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+    finally:
+        cap.release()
+
+@app.get("/cameras/{camera_id}/stream", tags=["Cameras"])
+def stream_camera(camera_id: str, db: Session = Depends(get_db)):
+    db_camera = db.query(models.Camera).filter(models.Camera.camera_id == camera_id).first()
+    if not db_camera or not db_camera.stream_url:
+        return {"error": "Camera stream not found"}
+    
+    return StreamingResponse(
+        generate_frames(db_camera.stream_url), 
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+
+# --- WEBRTC ENDPOINT ---
+pcs = set()
+
+@app.post("/cameras/{camera_id}/webrtc/offer", tags=["Cameras"])
+async def webrtc_offer(camera_id: str, offer: schemas.WebRTCOffer, db: Session = Depends(get_db)):
+    db_camera = db.query(models.Camera).filter(models.Camera.camera_id == camera_id).first()
+    if not db_camera or not db_camera.stream_url:
+        return {"error": "Camera stream not found"}
+
+    pc = RTCPeerConnection(configuration=RTCConfiguration(
+        iceServers=[RTCIceServer(urls=["stun:stun.l.google.com:19302"])]
+    ))
+    pc_id = "PeerConnection(%s)" % uuid.uuid4()
+    pcs.add(pc)
+
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange():
+        print(f"Connection state is {pc.connectionState}")
+        if pc.connectionState == "failed" or pc.connectionState == "closed":
+            await pc.close()
+            pcs.discard(pc)
+
+    video_track = OpenCVStreamTrack(db_camera.stream_url)
+    pc.addTrack(video_track)
+
+    offer_sdp = RTCSessionDescription(sdp=offer.sdp, type=offer.type)
+    await pc.setRemoteDescription(offer_sdp)
+
+    answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+
+    return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+
+# --- STORAGE MANAGER FOR MEDIA ---
+MEDIA_ROOT = os.path.join(os.path.dirname(__file__), "media")
+
+def get_storage_path(camera_id, media_type):
+    # Generates a path like: media/snapshots/2026-09-27/CAM-1/
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    path = os.path.join(MEDIA_ROOT, media_type, today_str, camera_id)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+# --- SNAPSHOT API ---
+@app.post("/cameras/{camera_id}/snapshot", tags=["Media"])
+def take_snapshot(camera_id: str, db: Session = Depends(get_db)):
+    db_camera = db.query(models.Camera).filter(models.Camera.camera_id == camera_id).first()
+    if not db_camera or not db_camera.stream_url:
+        return {"error": "Camera stream not found"}
+        
+    try:
+        url = int(db_camera.stream_url) if db_camera.stream_url.isdigit() else db_camera.stream_url
+    except:
+        url = db_camera.stream_url
+        
+    cap = cv2.VideoCapture(url)
+    success, frame = cap.read()
+    cap.release()
+    
+    if not success:
+        return {"error": "Failed to read frame from camera"}
+        
+    dir_path = get_storage_path(camera_id, "snapshots")
+    filename = f"snap_{datetime.now().strftime('%H-%M-%S')}.jpg"
+    filepath = os.path.join(dir_path, filename)
+    
+    cv2.imwrite(filepath, frame)
+    return {"message": "Snapshot saved to server", "path": filepath}
+
+# --- RECORDING API ---
+active_recordings = {}
+
+def record_camera_task(camera_id, stream_url, filepath):
+    try:
+        url = int(stream_url) if stream_url.isdigit() else stream_url
+    except:
+        url = stream_url
+        
+    cap = cv2.VideoCapture(url)
+    if not cap.isOpened():
+        return
+    
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if not fps or fps <= 0:
+        fps = 20.0
+        
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(filepath, fourcc, fps, (width, height))
+    
+    while active_recordings.get(camera_id, False):
+        success, frame = cap.read()
+        if not success:
+            break
+        out.write(frame)
+        
+    cap.release()
+    out.release()
+
+@app.post("/cameras/{camera_id}/record", tags=["Media"])
+def toggle_recording(camera_id: str, action: str, db: Session = Depends(get_db)):
+    # action should be "start" or "stop"
+    if action == "stop":
+        if camera_id in active_recordings:
+            active_recordings[camera_id] = False
+            return {"message": "Recording stopped"}
+        return {"error": "Not currently recording"}
+        
+    if action == "start":
+        if active_recordings.get(camera_id, False):
+            return {"error": "Already recording"}
+            
+        db_camera = db.query(models.Camera).filter(models.Camera.camera_id == camera_id).first()
+        if not db_camera or not db_camera.stream_url:
+            return {"error": "Camera stream not found"}
+            
+        dir_path = get_storage_path(camera_id, "recordings")
+        filename = f"rec_{datetime.now().strftime('%H-%M-%S')}.mp4"
+        filepath = os.path.join(dir_path, filename)
+        
+        active_recordings[camera_id] = True
+        
+        # Start recording in a background thread
+        t = threading.Thread(target=record_camera_task, args=(camera_id, db_camera.stream_url, filepath))
+        t.daemon = True
+        t.start()
+        
+        return {"message": "Recording started on server", "path": filepath}
 
 
 # --- WATCHLIST API ---

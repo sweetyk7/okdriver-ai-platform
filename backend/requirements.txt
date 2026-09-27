@@ -4,3 +4,6 @@ sqlalchemy
 pymysql
 pydantic
 python-dotenv
+opencv-python
+PyJWT
+python-multipart

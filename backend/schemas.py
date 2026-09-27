@@ -31,3 +31,7 @@ class WatchlistCreate(BaseModel):
 class DetectionCreate(BaseModel):
     camera_id: str
     vehicle_number: str
+
+class WebRTCOffer(BaseModel):
+    sdp: str
+    type: str

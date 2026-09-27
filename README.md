@@ -36,9 +36,19 @@ git clone <your-repo-link>
 cd okDriver
 ```
 
-### 2. Start the Backend
+### 2. Start the Backend (with Virtual Environment)
 ```bash
 cd backend
+
+# Create a virtual environment
+python -m venv venv
+
+# Activate it
+# On Windows:
+venv\Scripts\activate
+# On macOS/Linux:
+source venv/bin/activate
+
 pip install -r requirements.txt
 python -m uvicorn main:app --reload
 ```
