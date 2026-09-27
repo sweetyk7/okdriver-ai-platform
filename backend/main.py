@@ -71,11 +71,17 @@ def register_mediamtx_path(camera_id, stream_url):
         if "/video" in stream_url and "http" in stream_url:
             stream_url = stream_url.replace("http://", "rtsp://").replace("/video", "/h264_ulaw.sdp")
             
-        data = json.dumps({"source": stream_url}).encode('utf-8')
+        data = json.dumps({"source": stream_url, "sourceOnDemand": True}).encode('utf-8')
         req = urllib.request.Request(f'http://localhost:9997/v3/config/paths/add/{camera_id}', data=data, headers={'Content-Type': 'application/json'}, method='POST')
         urllib.request.urlopen(req, timeout=2)
     except urllib.error.HTTPError as e:
-        if e.code != 400: # 400 means path probably already exists
+        if e.code == 400: # 400 means path already exists, so we patch it to ensure settings are up to date
+            try:
+                req = urllib.request.Request(f'http://localhost:9997/v3/config/paths/patch/{camera_id}', data=data, headers={'Content-Type': 'application/json'}, method='PATCH')
+                urllib.request.urlopen(req, timeout=2)
+            except Exception as patch_e:
+                logger.error(f"MediaMTX PATCH error: {patch_e}")
+        else:
             logger.error(f"MediaMTX HTTP error: {e.code}")
     except Exception as e:
         logger.error(f"Failed to register path with MediaMTX: {e}")
@@ -154,15 +160,17 @@ async def webrtc_offer(camera_id: str, offer: schemas.WebRTCOffer, db: Session =
     # Ensure path is registered in case MediaMTX restarted
     register_mediamtx_path(camera_id, db_camera.stream_url)
 
-    # Forward WebRTC SDP Offer to MediaMTX
+    # Forward WebRTC SDP Offer to MediaMTX using WHEP protocol
     try:
-        data = json.dumps({"sdp": offer.sdp, "type": offer.type}).encode('utf-8')
-        req = urllib.request.Request(f'http://localhost:8889/{camera_id}/webrtc/offer', data=data, headers={'Content-Type': 'application/json'}, method='POST')
+        data = offer.sdp.encode('utf-8')
+        req = urllib.request.Request(f'http://localhost:8889/{camera_id}/whep', data=data, headers={'Content-Type': 'application/sdp'}, method='POST')
         response = urllib.request.urlopen(req, timeout=10)
-        answer = json.loads(response.read().decode('utf-8'))
-        return answer
+        answer_sdp = response.read().decode('utf-8')
+        return {"sdp": answer_sdp, "type": "answer"}
     except Exception as e:
         logger.error(f"MediaMTX WebRTC Error: {e}")
+        if hasattr(e, 'read'):
+            logger.error(f"MediaMTX Error Body: {e.read()}")
         return {"error": "Failed to connect to Media Server. Please try again."}
 
 # --- STORAGE MANAGER FOR MEDIA ---
