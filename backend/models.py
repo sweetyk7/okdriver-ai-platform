@@ -12,6 +12,7 @@ class Camera(Base):
     latitude = Column(Float)
     longitude = Column(Float)
     status = Column(String, default="Online")
+    stream_url = Column(String, nullable=True)
     last_heartbeat = Column(DateTime, default=datetime.datetime.utcnow)
 
 class Watchlist(Base):

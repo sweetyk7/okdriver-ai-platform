@@ -62,6 +62,15 @@ def create_camera(camera: schemas.CameraCreate, db: Session = Depends(get_db)):
 def get_cameras(db: Session = Depends(get_db)):
     return db.query(models.Camera).all()
 
+@app.delete("/cameras/{camera_id}", tags=["Cameras"])
+def delete_camera(camera_id: str, db: Session = Depends(get_db)):
+    db_camera = db.query(models.Camera).filter(models.Camera.camera_id == camera_id).first()
+    if not db_camera:
+        return {"error": "Camera not found"}
+    db.delete(db_camera)
+    db.commit()
+    return {"message": "Camera deleted successfully"}
+
 
 # --- WATCHLIST API ---
 @app.post("/watchlist/", tags=["Watchlist"])

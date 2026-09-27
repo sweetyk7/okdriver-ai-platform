@@ -8,6 +8,7 @@ class CameraCreate(BaseModel):
     department: str
     latitude: float
     longitude: float
+    stream_url: Optional[str] = None
 
 class CameraResponse(BaseModel):
     id: int
@@ -17,6 +18,7 @@ class CameraResponse(BaseModel):
     latitude: float
     longitude: float
     status: str
+    stream_url: Optional[str] = None
     last_heartbeat: datetime
 
     class Config:
