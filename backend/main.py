@@ -13,8 +13,6 @@ import models
 import schemas
 from database import engine, get_db
 
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
-from webrtc_stream import OpenCVStreamTrack
 import uuid
 
 # Create new tables
