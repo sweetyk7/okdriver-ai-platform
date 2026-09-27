@@ -57,15 +57,46 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
+import urllib.request
+import urllib.error
+import json
+import logging
+
+logging.basicConfig(level=logging.ERROR)
+logger = logging.getLogger(__name__)
+
+def register_mediamtx_path(camera_id, stream_url):
+    try:
+        # Convert IP Webcam HTTP MJPEG URL to RTSP for native H.264 streaming without CPU overhead
+        if "/video" in stream_url and "http" in stream_url:
+            stream_url = stream_url.replace("http://", "rtsp://").replace("/video", "/h264_ulaw.sdp")
+            
+        data = json.dumps({"source": stream_url}).encode('utf-8')
+        req = urllib.request.Request(f'http://localhost:9997/v3/config/paths/add/{camera_id}', data=data, headers={'Content-Type': 'application/json'}, method='POST')
+        urllib.request.urlopen(req, timeout=2)
+    except urllib.error.HTTPError as e:
+        if e.code != 400: # 400 means path probably already exists
+            logger.error(f"MediaMTX HTTP error: {e.code}")
+    except Exception as e:
+        logger.error(f"Failed to register path with MediaMTX: {e}")
 
 # --- CAMERA REGISTRY API ---
 @app.post("/cameras/", response_model=schemas.CameraResponse, tags=["Cameras"])
 def create_camera(camera: schemas.CameraCreate, db: Session = Depends(get_db)):
-    db_camera = models.Camera(**camera.model_dump())
-    db.add(db_camera)
-    db.commit()
-    db.refresh(db_camera)
-    return db_camera
+    try:
+        db_camera = models.Camera(**camera.model_dump())
+        db.add(db_camera)
+        db.commit()
+        db.refresh(db_camera)
+        
+        # Register stream with MediaMTX for ultra-scalable viewing
+        register_mediamtx_path(db_camera.camera_id, db_camera.stream_url)
+        
+        return db_camera
+    except Exception as e:
+        logger.error(f"Error saving camera to DB: {e}")
+        db.rollback()
+        raise
 
 @app.get("/cameras/", response_model=list[schemas.CameraResponse], tags=["Cameras"])
 def get_cameras(db: Session = Depends(get_db)):
@@ -113,38 +144,26 @@ def stream_camera(camera_id: str, db: Session = Depends(get_db)):
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
 
-# --- WEBRTC ENDPOINT ---
-pcs = set()
-
+# --- WEBRTC ENDPOINT (PROXY TO MEDIAMTX) ---
 @app.post("/cameras/{camera_id}/webrtc/offer", tags=["Cameras"])
 async def webrtc_offer(camera_id: str, offer: schemas.WebRTCOffer, db: Session = Depends(get_db)):
     db_camera = db.query(models.Camera).filter(models.Camera.camera_id == camera_id).first()
     if not db_camera or not db_camera.stream_url:
         return {"error": "Camera stream not found"}
 
-    pc = RTCPeerConnection(configuration=RTCConfiguration(
-        iceServers=[RTCIceServer(urls=["stun:stun.l.google.com:19302"])]
-    ))
-    pc_id = "PeerConnection(%s)" % uuid.uuid4()
-    pcs.add(pc)
+    # Ensure path is registered in case MediaMTX restarted
+    register_mediamtx_path(camera_id, db_camera.stream_url)
 
-    @pc.on("connectionstatechange")
-    async def on_connectionstatechange():
-        print(f"Connection state is {pc.connectionState}")
-        if pc.connectionState == "failed" or pc.connectionState == "closed":
-            await pc.close()
-            pcs.discard(pc)
-
-    video_track = OpenCVStreamTrack(db_camera.stream_url)
-    pc.addTrack(video_track)
-
-    offer_sdp = RTCSessionDescription(sdp=offer.sdp, type=offer.type)
-    await pc.setRemoteDescription(offer_sdp)
-
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-
-    return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+    # Forward WebRTC SDP Offer to MediaMTX
+    try:
+        data = json.dumps({"sdp": offer.sdp, "type": offer.type}).encode('utf-8')
+        req = urllib.request.Request(f'http://localhost:8889/{camera_id}/webrtc/offer', data=data, headers={'Content-Type': 'application/json'}, method='POST')
+        response = urllib.request.urlopen(req, timeout=10)
+        answer = json.loads(response.read().decode('utf-8'))
+        return answer
+    except Exception as e:
+        logger.error(f"MediaMTX WebRTC Error: {e}")
+        return {"error": "Failed to connect to Media Server. Please try again."}
 
 # --- STORAGE MANAGER FOR MEDIA ---
 MEDIA_ROOT = os.path.join(os.path.dirname(__file__), "media")
