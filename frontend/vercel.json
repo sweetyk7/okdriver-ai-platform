@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "https://uncolored-sturdily-shady.ngrok-free.dev/$1"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
