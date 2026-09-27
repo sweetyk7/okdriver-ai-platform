@@ -8,6 +8,7 @@ export default function CameraFeed({ feed, large = false }) {
   const videoRef = useRef(null);
   const [isRecording, setIsRecording] = useState(false);
   const [flash, setFlash] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
 
   useEffect(() => {
     let pc = null;
@@ -26,6 +27,7 @@ export default function CameraFeed({ feed, large = false }) {
       };
       
       pc.addTransceiver('video', { direction: 'recvonly' });
+      try { pc.addTransceiver('audio', { direction: 'recvonly' }); } catch (e) { console.log("Audio not supported"); }
       
       try {
         const offer = await pc.createOffer();
@@ -84,7 +86,7 @@ export default function CameraFeed({ feed, large = false }) {
       {flash && <div style={{ position: 'absolute', inset: 0, background: 'white', zIndex: 10, opacity: 0.8 }} />}
 
       {feed.stream_url ? (
-        <video ref={videoRef} autoPlay muted playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        <video ref={videoRef} autoPlay muted={isMuted} playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
       ) : (
         <video autoPlay muted loop playsInline>
           <source src={getDummyVideo(feed.camera_id)} type="video/mp4" />
@@ -102,6 +104,7 @@ export default function CameraFeed({ feed, large = false }) {
           {isRecording ? 'STOP' : 'REC'}
         </button>
         <button onClick={takeSnapshot} title="Take Snapshot">📸</button>
+        <button onClick={() => setIsMuted(!isMuted)} title={isMuted ? "Unmute" : "Mute"}>{isMuted ? "🔇" : "🔊"}</button>
         <button onClick={toggleFullscreen} title="Fullscreen">⛶</button>
       </div>
 
